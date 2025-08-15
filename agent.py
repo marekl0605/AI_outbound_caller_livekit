@@ -177,7 +177,7 @@ async def entrypoint(ctx: JobContext):
         vad=silero.VAD.load(),
         stt=deepgram.STT(),  # Removed streaming
         tts=elevenlabs.TTS(voice_id="nXIYu9FT5meibkBbZFT7", model="eleven_multilingual_v2"),  # Removed stream (to test compatibility)
-        llm=groq.LLM(model="llama-3.1-8b-instant"),
+        llm=groq.LLM(model="llama3-8b-8192"),
     )
 
     # Start session before dialing

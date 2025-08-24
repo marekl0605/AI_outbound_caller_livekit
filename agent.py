@@ -1,231 +1,204 @@
-from __future__ import annotations
+# agent.py
 
-import asyncio
-import logging
-import os
 from dotenv import load_dotenv
-import json
-import time
-from typing import Any
 
-from livekit import rtc, api
-from livekit.agents import (
-    AgentSession,
-    Agent,
-    JobContext,
-    function_tool,
-    RunContext,
-    get_job_context,
-    cli,
-    WorkerOptions,
-    RoomInputOptions,
-)
+import json
+import os
+import aiohttp
+from typing import Annotated, Any
+from livekit import api
+from livekit.agents import function_tool, RunContext
+
+from livekit import agents
+from livekit.agents import AgentSession, Agent, RoomInputOptions
 from livekit.plugins import (
     deepgram,
+    cartesia,
     groq,
-    elevenlabs,
+    openai,
+    noise_cancellation,
     silero,
 )
 from livekit.plugins.turn_detector.english import EnglishModel
 
 # Load environment variables
-load_dotenv(dotenv_path=".env.local")
-logger = logging.getLogger("outbound-caller")
-logger.setLevel(logging.DEBUG)  # Increased logging for latency debugging
+load_dotenv()
 
-# Twilio and LiveKit settings
-outbound_trunk_id = os.getenv("SIP_OUTBOUND_TRUNK_ID")
+# Defines the core behavior and capabilities of our voice assistant.
+class Assistant(Agent):
+    # The constructor initialises the agent with a set of instructions
+    def __init__(self) -> None:
+        super().__init__(instructions=f"""
+    #Identity
+You are Caleb, seasoned cold caller for Vertex Media (https://www.vertexmedia.us). Your #1 job is to book the user into an appointment - without collecting their email while booking you have failed this job. You build rapport, adapt, qualify, and gain trust through natural conversation. Handle every excuse/objection with confidence. Speak in one clear sentence unless more is necessary. Strategically ask guiding questions to reveal pain points. Never use emojis. Don't repeat the user's input unless needed. Pronounce “leads” as "leeds". Keep control of the call. If someone asks if your AI say your one of Vertex's new innovative tools and ask q. Hang up if: any music is detected or what they're saying seems to be not responding to you for an extended period of time. Always focus on value proposition. Make it clear: Vertex doesn't just offer leads, but actual deals. YOU MUST ALWAYS address/go off their responses immediately (even after wait command). Always wait when instructed. 
 
-class OutboundCaller(Agent):
-    def __init__(
-        self,
-        *,
-        name: str,
-        dial_info: dict[str, Any],
-    ):
-        super().__init__(
-            instructions=f"""
-            You are Caleb, a cold caller for Vertex Media (https://www.vertexmedia.us). Engage real estate agents naturally, pitch lead generation services, collect their email, and propose a Zoom appointment. Use filler words ('um,' 'you know,' 'like') to sound human. Ask guiding questions to uncover pain points. Pronounce 'leads' as 'leeds.' Control the call. If asked if you're AI, say you're a Vertex tool and ask a question. Hang up if music is detected or user is unresponsive. Focus on delivering deals.
+#Script Frequently mix in filler words: “um,” “you know,” “like,” “I mean,” "so yeah” to sound more human 1.Intro “Hey is this Mustafa?? (MUST WAIT)(if they say their name first just skip this)
+“Awesome just Caleb here. Uh Hows it going today?" (high tone)(wait) (if they ask how you are say you're doing well)
+If they say Who? “Just Caleb from Vertex, weve never actually spoken before” (continue)
+"So umm listen I'm sure you get tons of random calls, but I was uh, hoping you could clear something up?? (high)... do you have like 20 seconds just so I can explain why I'm calling?" (curious tone) (wait for their response and act accordingly)
 
-            **Script**:
-            1. **Intro**: 'Hey, is this {name}?' (wait). If name given, say, 'Awesome, just Caleb here. How's it going?' (wait). If asked 'Who?', say, 'Just Caleb from Vertex, first time talking.' Then: 'I know you get tons of calls, but can I have 20 seconds to explain why I'm calling?' (wait, adapt).
-            2. **Pitch**: 'Realtors like you face inconsistent months, non-converting leads, or too much work. Which hits you most?' (wait, adapt). Then: 'Vertex works with agents like Coldwell Banker, getting you homeowners ready to sell, handling leads and follow-ups, booking them into your calendar. We use AI funnels, YouTube ads, and ex-agent teams. Could you handle 2-4 extra deals next month?' (wait, handle objections or book). Ask: 'Are you focused on buyers, sellers, listings, or cash flow?' (wait, adapt).
-            3. **Booking**: 'We’d love to see if we’re a fit. What’s your time zone?' (wait). Say: 'Does tomorrow work for a Zoom, or the day after?' (wait). Ask: 'Morning or afternoon?' Offer two slots (e.g., 10 AM, 2 PM). Collect: 'What’s your best email? Spell it quick.' (wait 8 seconds). Confirm: 'You’re set for [date/time]. Expect a Vertex email soon—please confirm.' Ask: 'Anything stopping you from attending?' If no, say 'Perfect,' answer questions, wrap up.
+“So um, to keep it short and sweet, I've been talking with a few realtors like yourself, and I noticed that they all seem to struggle with a few specific problems. The first one being Inconsistent Months which leads to Unpredictable Business. And the second being Wasting time on People Who Never Convert. And finally realtors seem to have too Much on Their Plate with Not Enough Time. So I was just wondering, out of those three problems, which one sounds most like you?”
+(wait)(heavily go off response)
 
-            **Objections**:
-            - **Not interested/busy**: 'If I could get you 2 deals in 90 days with no work, would you give me a few seconds? You can hang up after.' (wait)
-            - **Email/website/text**: 'What are you looking for so I know what to send?' (wait). If pitched: 'Let’s skip email and do a quick call to review testimonials. Sound good?' (wait)
-            - **Cost**: 'There’s an investment, but we tailor it after learning your needs. We’ll cover costs on a call, and if we don’t deliver, we work free. Fair?' (wait)
-            - **Working with someone**: 'Are you fully satisfied? If we could add value without replacing them, would you explore?' (wait)
-            """
-        )
-        self.participant: rtc.RemoteParticipant | None = None
-        self.dial_info = dial_info
-        self.email_collected = False
-        self.time_zone = None
-        self.appointment_date = None
-        self.appointment_time = None
 
-    def set_participant(self, participant: rtc.RemoteParticipant):
-        self.participant = participant
+2.Pitch: 
+“So I'm with a group called Vertex, and as i said weve actually been working with a lot of agents like yourself across the US. and you know, teams like Coldwell Banker and Colemere Realty.
+and to keep it simple, we get agents in front of homeowners who are already thinking about selling but just haven't listed yet. We actually take on the headache of um generating the leads, qualifying them based on your criteria, and handling all the follow-ups. From there, we book them straight into your calendar so all you have to do is step in and close. Its as simple as that and its all done by leveraging our new AI funnels, hyper targeted youtube ad campaigns, and most importantly our in house team, who are all former agents themselves. So, just to confirm, if we could guarantee you, you know, an extra 2 to 4 deals next month youd be able to take on the extra volume right?” (wait)(If they object handle it then move on. If no objections move to booking)
 
-    async def hangup(self):
-        """Hang up the call by deleting the room"""
-        job_ctx = get_job_context()
-        try:
-            await job_ctx.api.room.delete_room(api.DeleteRoomRequest(room=job_ctx.room.name))
-            logger.info(f"Call hung up for {self.participant.identity}")
-        except Exception as e:
-            logger.error(f"Error hanging up: {e}")
+“Great so um just so I understand , is your main goal right now getting more buyers, sellers, listings, or just whatever brings in the cash?” (wait/go off answer) 
 
-    @function_tool()
-    async def transfer_call(self, ctx: RunContext):
-        """Transfer the call to a human agent after user confirmation"""
-        start_time = time.time()
-        transfer_to = self.dial_info.get("transfer_to")
-        if not transfer_to:
-            await ctx.session.generate_reply(instructions="Cannot transfer call, no transfer number provided.")
-            logger.debug(f"Transfer call failed: no transfer number, latency: {time.time() - start_time:.3f}s")
-            return "cannot transfer call"
+3. Booking: "Perfect so um, we'd love to just get to know you, show you the system, and really see if we'd be a good fit for each other. Does Tomorrow work for a quick zoom call or is the day after better?”
 
-        logger.info(f"Transferring call to {transfer_to}")
-        await ctx.session.generate_reply(instructions="Let the user know you'll be transferring them.")
-        job_ctx = get_job_context()
-        try:
-            await job_ctx.api.sip.transfer_sip_participant(
-                api.TransferSIPParticipantRequest(
-                    room_name=job_ctx.room.name,
-                    participant_identity=self.participant.identity,
-                    transfer_to=f"tel:{transfer_to}",
-                )
-            )
-            logger.info(f"Transferred call to {transfer_to}")
-            logger.debug(f"Transfer call completed, latency: {time.time() - start_time:.3f}s")
-        except Exception as e:
-            logger.error(f"Error transferring call: {e}")
-            await ctx.session.generate_reply(instructions="There was an error transferring the call.")
-            await self.hangup()
-            logger.debug(f"Transfer call failed, latency: {time.time() - start_time:.3f}s")
+#BOOKING
+RULES: MUST ALWAYS FIRST ASK FOR THEIR TIME ZONE. Go off previous answer and decide on a day (push for nearest day). Never book them for todays date. Then ask if they would prefer a morning or afternoon slot. First Check for available slots and then offer 2 in their time zone based on their answer. Ask if either works or if they need another time. Work with their availability to schedule. You MUST ALWAYS: Immediately ask for their best email and have them spell it quickly ALWAYS GIVE 8 SECONDS TO SPELL - NEVER INTERRUPT AND ASK THEM TO FINISH THE REST OF IT. Without collecting an email you have failed your job. Read back appointment details ONLY ONCE. Let them know they'll get a confirmation email from Vertex in the next couple of hours and tell them to please confirm it. Then say: “and one last thing, just to respect your time and ours, as we're going to show you something that has helped hundreds of realtors make significantly more money, is there anything that would prevent you from attending this meeting?” If no, then say “perfect” and answer any last q's and wrap up smoothly in 1–2 lines.
 
-    @function_tool()
-    async def end_call(self, ctx: RunContext):
-        """End the call when user requests or conditions met (e.g., music detected)"""
-        start_time = time.time()
-        logger.info(f"Ending call for {self.participant.identity}")
-        current_speech = ctx.session.current_speech
-        if current_speech:
-            await current_speech.wait_for_playout()
-        await self.hangup()
-        logger.debug(f"End call completed, latency: {time.time() - start_time:.3f}s")
+#HANDLING OBJECTIONS
+Say what fits based on chat, but here's guidance:
+*Im not interested/am busy (before pitch)*
+“I completely understand, but if you knew that I could get you 2 closed deals within 90 days with no legwork on your end would you give me just a few seconds to just explain myself? If your still not interested after that you can hang up guilt free." (wait)
+*Can you send me an email/website/text me?*
+“Ya for sure no worries at all, and just so I know…what specifically are you looking for so I know what to send?” (wait/go off response) "Look um, I'm gonna be honest with you, from one business owner to another I'm not gonna waste either of our time and send you that email." (ONLY IF PITCHED): How about instead we set up a time to chat for a few minutes to ask each other any questions in real time, go over some testimonials, and at least then you'll know you explored your options. That sound good?" (wait).
+*Whats the cost/Upfront cost (before pitch)*
+*Whats the cost?/Is there an upfront cost?/I only work with referrals/commissions (after pitch)*( anything cost related refer to this)  “Ye so of course there is an investment, but to be honest It wouldn't be fair to give you a number yet, because we don't even know if we can help you yet. First, we'd need to learn more about your business and market, see where you're leaving money on the table, and figure out the best strategy for you. The next step is a quick call where we show you our system, walk you through everything, and break down the costs. But just so you have peace of mind though— if we can't deliver the results in the agreed time, we work for free until we do. Does that sound fair? 
 
-    @function_tool()
-    async def look_up_availability(self, ctx: RunContext, date: str):
-        """Simulate checking appointment availability for demo"""
-        start_time = time.time()
-        logger.info(f"Looking up availability for {self.participant.identity} on {date}")
-        available_times = ["10:00 AM", "2:00 PM"] if "tomorrow" in date.lower() else ["11:00 AM", "3:00 PM"]
-        self.appointment_date = date
-        logger.debug(f"Availability lookup completed, latency: {time.time() - start_time:.3f}s")
-        return {"available_times": available_times}
+Only if they keep pushing for detail: Say something along the lines of while its risk free the cost depends on specific factors you'd have to discuss on a later meeting 
+*I'm already working with someone*
+"Totally understand — most people I speak with are. Can I ask, are you completely satisfied with them?" (play off answer) 
+"So I'm just curious, if there was a way to add to what you're doing, without replacing anything, would it make sense to explore it?" (wait)
 
-    @function_tool()
-    async def confirm_appointment(self, ctx: RunContext, date: str, time: str, email: str):
-        """Simulate confirming appointment for demo"""
-        start_time = time.time()
-        logger.info(f"Confirming appointment for {self.participant.identity} on {date} at {time}, email: {email}")
-        self.email_collected = True
-        self.appointment_date = date
-        self.appointment_time = time
-        logger.debug(f"Appointment confirmation completed, latency: {time.time() - start_time:.3f}s")
-        return f"Reservation confirmed for {date} at {time}. You'll receive a confirmation email from Vertex soon—please confirm it."
 
-    @function_tool()
-    async def collect_email(self, ctx: RunContext, email: str):
-        """Collect and validate user's email"""
-        start_time = time.time()
-        logger.info(f"Collecting email for {self.participant.identity}: {email}")
-        self.email_collected = True
-        logger.debug(f"Email collection completed, latency: {time.time() - start_time:.3f}s")
-        return f"Email {email} collected, please confirm."
+    
+    """)
+    
+    # This method is a tool that the agent can use to get the current weather.
+    # The @function_tool decorator exposes this method to the agent's LLM,
+    # allowing it to be called when the user asks for the weather.
+    # @function_tool()
+    # async def get_weather(
+    #     self,
+    #     context: RunContext,
+    #     location: Annotated[
+    #         str, "The city and state, e.g. San Francisco, CA"
+    #     ],
+    # ) -> str:
+    #     """Get the current weather in a given location"""
+    #     api_key = os.environ.get("OPENWEATHER_API_KEY")
+    #     if not api_key:
+    #         return "OpenWeather API key is not set."
 
-    @function_tool()
-    async def detected_answering_machine(self, ctx: RunContext):
-        """Hang up if voicemail is detected"""
-        start_time = time.time()
-        logger.info(f"Detected answering machine for {self.participant.identity}")
-        await self.hangup()
-        logger.debug(f"Answering machine detection completed, latency: {time.time() - start_time:.3f}s")
+    #     url = f"http://api.openweathermap.org/data/2.5/weather?q={location}&appid={api_key}&units=metric"
 
-async def entrypoint(ctx: JobContext):
-    start_time = time.time()
-    logger.info(f"Connecting to room {ctx.room.name}")
+    #     async with aiohttp.ClientSession() as session:
+    #         async with session.get(url) as response:
+    #             if response.status != 200:
+    #                 return f"Sorry, I couldn't get the weather. Status code: {response.status}"
+                
+    #             data = await response.json()
+                
+    #             if "weather" not in data or not data["weather"]:
+    #                 return "Sorry, I couldn't find any weather data for that location."
+                
+    #             description = data["weather"][0]["description"]
+    #             temp = data["main"]["temp"]
+                
+    #             return f"The weather in {location} is {description} with a temperature of {temp}°C."
+
+# The entrypoint is the main function that runs when a new job for the agent starts.
+# It sets up the agent's connection to a LiveKit room and manages its lifecycle.
+async def entrypoint(ctx: agents.JobContext):
+    # Connect the agent to the LiveKit room associated with the job.
     await ctx.connect()
-    logger.debug(f"Room connection completed, latency: {time.time() - start_time:.3f}s")
 
-    dial_info = json.loads(ctx.job.metadata)
-    participant_identity = phone_number = dial_info["phone_number"]
+    # This block attempts to start a recording (egress) of the room's audio.
+    # The recording is saved to an S3 bucket.
+    try:
+        lkapi = api.LiveKitAPI()
 
-    # Initialize agent
-    agent = OutboundCaller(
-        name="Mustafa",  # Replace with dynamic name from CRM
-        dial_info=dial_info,
-    )
-
-    # Configure session with ElevenLabs for James-like voice
-    session = AgentSession(
-        turn_detection=EnglishModel(),  # Kept for turn detection
-        vad=silero.VAD.load(),
-        stt=deepgram.STT(),  # Removed streaming
-        tts=elevenlabs.TTS(voice_id="nXIYu9FT5meibkBbZFT7", model="eleven_multilingual_v2"),  # Removed stream (to test compatibility)
-        llm=groq.LLM(model="llama3-8b-8192"),
-    )
-
-    # Start session before dialing
-    session_start_time = time.time()
-    session_started = asyncio.create_task(
-        session.start(
-            agent=agent,
-            room=ctx.room,
-            room_input_options=RoomInputOptions(),
-        )
-    )
-    logger.debug(f"Session start initiated, latency: {time.time() - session_start_time:.3f}s")
-
-    # Dial user with retry logic to handle SIP errors
-    max_attempts = 3
-    for attempt in range(max_attempts):
-        try:
-            dial_start_time = time.time()
-            await ctx.api.sip.create_sip_participant(
-                api.CreateSIPParticipantRequest(
-                    room_name=ctx.room.name,
-                    sip_trunk_id=outbound_trunk_id,
-                    sip_call_to=phone_number,
-                    participant_identity=participant_identity,
-                    wait_until_answered=True,
+        req = api.RoomCompositeEgressRequest(
+            room_name=ctx.room.name,
+            audio_only=True,
+            file_outputs=[
+                api.EncodedFileOutput(
+                    file_type=api.EncodedFileType.OGG,
+                    filepath=f"{ctx.room.name}.ogg",
+                    # S3 configuration for uploading the recording.
+                    s3=api.S3Upload(
+                        access_key=os.environ.get("AWS_S3_ACCESS_KEY"),
+                        secret=os.environ.get("AWS_S3_SECRET_KEY"),
+                        region="eu-north-1",
+                        bucket="livekit-calls"
+                    )
                 )
-            )
-            logger.debug(f"SIP participant creation completed, latency: {time.time() - dial_start_time:.3f}s")
-            await session_started
-            participant = await ctx.wait_for_participant(identity=participant_identity)
-            logger.info(f"Participant joined: {participant.identity}")
-            agent.set_participant(participant)
-            logger.debug(f"Entrypoint completed, total latency: {time.time() - start_time:.3f}s")
-            break
-        except api.TwirpError as e:
-            logger.error(
-                f"Attempt {attempt+1} failed creating SIP participant: {e.message}, "
-                f"SIP status: {e.metadata.get('sip_status_code')} {e.metadata.get('sip_status')}"
-            )
-            if attempt == max_attempts - 1:
-                ctx.shutdown()
-                return
-            await asyncio.sleep(1)
-
-if __name__ == "__main__":
-    cli.run_app(
-        WorkerOptions(
-            entrypoint_fnc=entrypoint,
-            agent_name="caleb",
+            ],
         )
+        print("Starting room egress...")
+        egress_info = await lkapi.egress.start_room_composite_egress(req)
+        await lkapi.aclose()
+        egress_id = getattr(egress_info, "egress_id", None) or getattr(egress_info, "egressId", None)
+        print(f"Egress started successfully. Egress ID: {egress_id}")
+    except Exception as e:
+        print(f"Error starting egress: {e}")
+
+    # Check for a phone number in the job metadata to determine if this is an outbound call.
+    phone_number = None
+    if ctx.job.metadata:
+        try:
+            metadata = json.loads(ctx.job.metadata)
+            phone_number = metadata.get("phone_number")
+        except json.JSONDecodeError:
+            print("Error: Invalid JSON in job metadata")
+
+    # If a phone number is provided, initiate an outbound SIP call.
+    if phone_number:
+        print(f"Attempting to place outbound call to: {phone_number}")
+        try:
+            # Use the LiveKit API to create a new SIP participant, effectively making a call.
+            await ctx.api.sip.create_sip_participant(api.CreateSIPParticipantRequest(
+                room_name=ctx.room.name,
+                sip_trunk_id='ST_S5x7yXbF7QDH', # The specific SIP trunk to use.
+                sip_call_to=phone_number,
+                participant_identity=phone_number, # Identity for the participant in the room.
+                wait_until_answered=True, # Wait for the call to be answered before proceeding.
+            ))
+            print(f"Call to {phone_number} was answered.")
+        except api.TwirpError as e:
+            # Handle errors during SIP call creation, like the call not being answered.
+            print(f"Error creating SIP participant: {e.message}")
+            await ctx.shutdown()
+            return
+
+    # Set up the agent's session with various services (plugins).
+    session = AgentSession(
+        # stt=openai.STT(model="gpt-4o-mini-transcribe"),
+        # llm=openai.LLM(model="gpt-4o-mini"),
+        # tts=openai.TTS(model="gpt-4o-mini-tts"),
+        stt=deepgram.STT(),
+        tts=cartesia.TTS(model="sonic-2", voice="73369e4c-fd0c-4f46-92db-01c7fc6ea830"),
+        llm=groq.LLM(model="llama3-8b-8192"),
+        vad=silero.VAD.load(),
+        turn_detection=EnglishModel(),
     )
+
+    # Start the agent session, which begins processing audio from the room.
+    await session.start(
+        room=ctx.room,
+        agent=Assistant(), # Use the Assistant agent we defined earlier.
+        room_input_options=RoomInputOptions(
+            # Apply noise cancellation to the audio input.
+            noise_cancellation=noise_cancellation.BVCTelephony(),
+        ),
+    )
+
+    # If this is not an outbound call (i.e., no phone number was provided),
+    # the agent should start the conversation.
+    if not phone_number:
+        await session.generate_reply(
+            instructions="Greet the user and offer your assistance."
+        )
+
+# This is the main execution block. It runs the agent worker when the script is executed
+if __name__ == "__main__":
+    agents.cli.run_app(agents.WorkerOptions(
+        entrypoint_fnc=entrypoint,
+        agent_name="livekit-marek" # A unique name for this agent worker.
+    ))

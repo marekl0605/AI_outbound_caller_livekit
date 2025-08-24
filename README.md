@@ -1,72 +1,65 @@
-<a href="https://livekit.io/">
-  <img src="./.github/assets/livekit-mark.png" alt="LiveKit logo" width="100" height="100">
-</a>
+# first-livekit-agent
+Build and deploy your first livekit agent
 
-# Python Outbound Call Agent
+This repository contains the code for building and deploying an AI voice agent using the LiveKit Agents 1.0 framework, integrated with Twilio for phone calls and AWS S3 for call recording storage.
 
-<p>
-  <a href="https://docs.livekit.io/agents/overview/">LiveKit Agents Docs</a>
-  •
-  <a href="https://livekit.io/cloud">LiveKit Cloud</a>
-  •
-  <a href="https://blog.livekit.io/">Blog</a>
-</p>
-
-This example demonstrates an full workflow of an AI agent that makes outbound calls. It uses LiveKit SIP and Python [Agents Framework](https://github.com/livekit/agents).
-
-It can use a pipeline of STT, LLM, and TTS models, or a realtime speech-to-speech model. (such as ones from OpenAI and Gemini).
-
-This example builds on concepts from the [Outbound Calls](https://docs.livekit.io/agents/start/telephony/#outbound-calls) section of the docs. Ensure that a SIP outbound trunk is configured before proceeding.
+The project demonstrates how to create a complete voice agent pipeline featuring Speech-to-Text (STT), Language Model (LLM), Text-to-Speech (TTS), Voice Activity Detection (VAD), Turn Taking, and Noise Reduction.
 
 ## Features
 
-This example demonstrates the following features:
+*   **LiveKit Agents 1.0:** Core pipeline for the AI voice agent.
+*   **Twilio Integration:** Handle both inbound and outbound phone calls.
+*   **AWS S3 Recording:** Record and store all call audio.
+*   **Tool Use:** Example implementation of giving the agent access to external tools (e.g., a weather tool).
+*   **Automated Twilio Setup:** A Python script (`setup_twilio_livekit.py`) to simplify Twilio SIP trunk configuration.
+*   **Customizable Components:** Easily swap out STT, LLM, and TTS models.
 
-- Making outbound calls
-- Detecting voicemail
-- Looking up availability via function calling
-- Transferring to a human operator
-- Detecting intent to end the call
-- Uses Krisp background voice cancellation to handle noisy environments
+## Prerequisites
 
-## Dev Setup
+Before you begin, you will need accounts and credentials for the following services:
 
-Clone the repository and install dependencies to a virtual environment:
+*   **LiveKit Cloud:** API Key and Secret.
+*   **AWS:** Account with S3 access. You'll need an IAM user with permissions (`s3:GetObject`, `s3:PutObject`, `s3:ListBucket`) for a specific S3 bucket, and their Access Key ID and Secret Access Key. You will also need your AWS region.
+*   **Twilio:** Account SID, Auth Token, and an active phone number capable of handling voice calls.
+*   **AI Service Providers:** API keys for your chosen STT, LLM, and TTS models (e.g., Deepgram, Grok, ElevenLabs, Cartesia, OpenAI, etc.).
 
-```shell
-git clone https://github.com/livekit-examples/outbound-caller-python.git
-cd outbound-caller-python
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python agent.py download-files
-```
+## Getting Started
 
-Set up the environment by copying `.env.example` to `.env.local` and filling in the required values:
+1.  **Clone the Repository:**
+    ```bash
+    git clone <repository_url>
+    cd <repository_name>
+    ```
 
-- `LIVEKIT_URL`
-- `LIVEKIT_API_KEY`
-- `LIVEKIT_API_SECRET`
-- `OPENAI_API_KEY`
-- `SIP_OUTBOUND_TRUNK_ID`
-- `DEEPGRAM_API_KEY` - optional, only needed when using pipelined models
-- `CARTESIA_API_KEY` - optional, only needed when using pipelined models
+2.  **Install Dependencies:**
+    ```bash
+    pip install -r requirements.txt
+    ```
 
-Run the agent:
+3.  **Gather Credentials:**
+    Collect all the API keys and credentials listed in the Prerequisites section. Store them securely (e.g., in environment variables).
 
-```shell
-python3 agent.py dev
-```
+4.  **Configure AWS S3:**
+    Update the AWS S3 configuration in `agent.py` (or use environment variables if preferred) with your AWS region and S3 bucket name.
 
-Now, your worker is running, and waiting for dispatches in order to make outbound calls.
+5.  **Run Twilio/LiveKit Setup Script:**
+    This script configures Twilio to work with LiveKit. You will be prompted to enter details:
+    ```bash
+    python setup_twilio_livekit.py
+    ```
+    Provide a base name for resources, your Twilio phone number (e.g., `+44...`), a username for SIP authentication, and a strong password (minimum 12 characters, including mixed case, numbers, and symbols). You will also need your LiveKit SIP URI from the LiveKit Cloud dashboard (Settings -> Project).
 
-### Making a call
+6.  **Update Agent Code:**
+    After running the setup script, it will output a LiveKit outbound SIP trunk ID. Copy this value.
+    Open `agent.py`, find the `create_SIP_participant` call, and replace the placeholder SIP trunk ID with the one provided by the script.
+    Also, ensure the agent name defined in `agent.py` matches the name you used when running `setup_twilio_livekit.py`.
 
-You can dispatch an agent to make a call by using the `lk` CLI:
+7.  **Configure Agent Models/Prompt:**
+    In `agent.py`, update the code to use your preferred STT, LLM, and TTS models by providing their respective API keys and model names. Customize the agent's system prompt/instructions within the `Assistant` class.
 
-```shell
-lk dispatch create \
-  --new-room \
-  --agent-name outbound-caller \
-  --metadata '{"phone_number": "+1234567890", "transfer_to": "+9876543210}'
-```
+## Running the Agent
+
+To start the agent and have it listen for calls:
+
+```bash
+python agent.py dev
